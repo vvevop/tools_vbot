@@ -20,8 +20,10 @@ logging.basicConfig(level=logging.INFO)
 # Установка команд бота
 async def set_commands(bot: Bot):
     main_commands = [
-        BotCommand(command="start", description="🏠 Главное меню"),
+        BotCommand(command="start", description="Главное меню"),
         BotCommand(command="qr", description="Текст → QR-код"),
+        BotCommand(command="enc64", description="Text → Base64"),
+        BotCommand(command="dec64", description="Base64 → Text"),
     ]
     
     await bot.set_my_commands(

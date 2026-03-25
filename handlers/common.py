@@ -8,7 +8,7 @@ router = Router()
 async def cmd_start(message: types.Message):
     # await message.delete()
 
-    await message.answer("🏠 Главное меню:", reply_markup=get_main_kb())
+    await message.answer("<tg-emoji emoji-id='5341715473882955310'>⚙️</tg-emoji> <b>Главное меню:</b>", reply_markup=get_main_kb())
 
 @router.callback_query(F.data == "main_menu")
 async def handle_main_menu(callback: types.CallbackQuery):

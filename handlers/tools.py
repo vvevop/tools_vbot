@@ -1,6 +1,7 @@
 import io
 import html
 import qrcode
+import base64
 from aiogram import Router, F, Bot, types
 from aiogram.types import Message, LinkPreviewOptions, BufferedInputFile
 from aiogram.filters import Command, CommandObject
@@ -25,6 +26,8 @@ async def handle_utils_menu(callback: types.CallbackQuery):
 
 <b>Команды:</b>
 <code>/qr [текст]</code> — генерация QR-кода
+<code>/enc64 [текст]</code> — кодирование текста в Base64
+<code>/dec64 [base64_текст]</code> — декодирование текста из Base64
 
 """,
         reply_markup=get_utils_kb()
@@ -147,3 +150,43 @@ async def cmd_qr(message: types.Message, command: CommandObject):
         
     except Exception as e:
         await message.answer(f"❌ Ошибка при генерации: {str(e)}")
+
+# --- Text -> Base64 Encode ---
+@router.message(Command("enc64"))
+async def cmd_enc64(message: types.Message, command: CommandObject):
+    # Добавляем комментарий к функции: Кодирует введенный текст в формат Base64.
+    if not command.args:
+        return await message.reply(
+            "⚠️ Вы не ввели текст для кодирования!\nИспользование: <code>/enc64 ваш_текст</code>"
+        )
+    
+    await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+
+    try:
+        encoded_bytes = base64.b64encode(command.args.encode('utf-8'))
+        encoded_text = encoded_bytes.decode('utf-8')
+        await message.reply(
+            f"<code>{encoded_text}</code>"
+        )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при кодировании: {str(e)}")
+
+# --- Base64 -> Text Decode ---
+@router.message(Command("dec64"))
+async def cmd_dec64(message: types.Message, command: CommandObject):
+    # Добавляем комментарий к функции: Декодирует введенный текст из формата Base64.
+    if not command.args:
+        return await message.reply(
+            "⚠️ Вы не ввели Base64 текст для декодирования!\nИспользование: <code>/dec64 ваш_base64_текст</code>"
+        )
+    
+    await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+
+    try:
+        decoded_bytes = base64.b64decode(command.args.encode('utf-8'))
+        decoded_text = decoded_bytes.decode('utf-8')
+        await message.reply(
+            f"<code>{decoded_text}</code>"
+        )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при декодировании. Возможно, это не валидный Base64: {str(e)}")
