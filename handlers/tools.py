@@ -16,17 +16,17 @@ from keyboards.builders import get_utils_kb, get_short_emoji_options_kb
 router = Router()
 
 class EmojiIdCallback(CallbackData, prefix="emoji_id"):
-    action: str # e.g., "send_short"
-    original_message_id: int # ID of the message that initiated the command
+    action: str # например, "send_short"
+    original_message_id: int # ID сообщения, инициировавшего команду
 
-# Helper function to generate the emoji response text
+# Вспомогательная функция для формирования текста ответа с эмодзи
 def _generate_emoji_response_text(
     message: Message, include_code_for_copy: bool
-) -> Tuple[str, str]: # Changed return type hint
+) -> Tuple[str, str]:
     custom_emojis = [e for e in (message.entities or []) if e.type == "custom_emoji"]
 
     if not custom_emojis:
-        # Return empty strings for both parts if no custom emojis are found
+        # Возвращать пустые строки для обеих частей, если не найдено пользовательских эмодзи.
         return "", ""
 
     emoji_details = []
@@ -50,14 +50,14 @@ def _generate_emoji_response_text(
     total_count_block = f"<blockquote>Всего: <b>{total_emojis}</b></blockquote>"
 
     response_parts = [part for part in [all_emojis_block, total_count_block] if part]
-    # Return both parts as a tuple
+    # Верните обе части в виде кортежа
     return "\n\n".join(response_parts), total_count_block
 
-# --- Шпаргалка ---
+# --- Меню "Доступные функции" ---
 @router.callback_query(F.data == "menu_utils")
 async def handle_utils_menu(callback: types.CallbackQuery):
     await callback.message.edit_text(
-        """🛠 <b>Доступные функции:</b>
+"""<tg-emoji emoji-id='6021401276904905698'>🛠</tg-emoji> <b>Доступные функции:</b>
 
 Эти инструменты работают <b>всегда</b>:
 
@@ -69,7 +69,6 @@ async def handle_utils_menu(callback: types.CallbackQuery):
 <code>/qr [текст]</code> — генерация QR-кода
 <code>/enc64 [текст]</code> — кодирование текста в Base64
 <code>/dec64 [base64_текст]</code> — декодирование текста из Base64
-
 """,
         reply_markup=get_utils_kb()
     )
@@ -151,6 +150,7 @@ async def handle_group_reply_media(message: Message):
                     await replied_message.reply(f"❌ Произошла ошибка Telegram: {str(e)}")
             except Exception as e:
                 await replied_message.reply(f"❌ Произошла непредвиденная ошибка: {str(e)}")
+
 # --- Код эмодзи из текста ---
 @router.message(F.chat.type == "private", F.entities.len() > 0, ~F.text.startswith("/"))
 async def get_emoji_id(message: Message):
@@ -158,13 +158,13 @@ async def get_emoji_id(message: Message):
 
     full_response_text, total_count_block = _generate_emoji_response_text(message, include_code_for_copy=True)
     if not full_response_text:
-        return # No custom emojis found
+        return # Кастомные эмодзи не найдены
 
     try:
         await message.reply(full_response_text)
     except TelegramBadRequest as e:
         if "message is too long" in str(e):
-            # Create inline keyboard for short version
+            # Создаем inline клавиатуру для краткой версии
             yes_callback_data = EmojiIdCallback(action="send_short_yes", original_message_id=message.message_id).pack()
             keyboard = get_short_emoji_options_kb(yes_callback_data)
             await message.reply(
@@ -178,7 +178,7 @@ async def get_emoji_id(message: Message):
     except Exception as e:
         await message.answer(f"❌ Произошла непредвиденная ошибка: {str(e)}")
 
-# Handler for "Да" (Yes) button to send the short emoji ID and delete the original message
+# Обработчик для кнопки «Да», отправляющий короткий ID эмодзи и удаляющий исходное сообщение
 @router.callback_query(EmojiIdCallback.filter(F.action == "send_short_yes"))
 async def handle_send_short_yes(callback: types.CallbackQuery, callback_data: EmojiIdCallback):
     """
@@ -200,7 +200,7 @@ async def handle_send_short_yes(callback: types.CallbackQuery, callback_data: Em
         return
 
     try:
-        # Edit the bot's previous message (the one with the button) to display the short text
+        # Редактируем предыдущее сообщение бота (то, что с кнопкой), чтобы отобразить короткий текст.
         await callback.message.edit_text(short_response_text, reply_markup=None)
     except TelegramBadRequest as e:
         await callback.message.edit_text(f"❌ Не удалось отправить сокращенный вариант: {str(e)}")
@@ -245,7 +245,7 @@ async def cmd_qr(message: types.Message, command: CommandObject):
     except Exception as e:
         await message.answer(f"❌ Ошибка при генерации: {str(e)}")
 
-# --- Text -> Base64 Encode ---
+# --- Text → Base64 ---
 @router.message(Command("enc64"))
 async def cmd_enc64(message: types.Message, command: CommandObject):
     # Добавляем комментарий к функции: Кодирует введенный текст в формат Base64.
@@ -265,7 +265,7 @@ async def cmd_enc64(message: types.Message, command: CommandObject):
     except Exception as e:
         await message.answer(f"❌ Ошибка при кодировании: {str(e)}")
 
-# --- Base64 -> Text Decode ---
+# --- Base64 → Text ---
 @router.message(Command("dec64"))
 async def cmd_dec64(message: types.Message, command: CommandObject):
     # Добавляем комментарий к функции: Декодирует введенный текст из формата Base64.

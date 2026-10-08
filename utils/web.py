@@ -1,5 +1,6 @@
 import aiohttp
 
+# асинхронная функция для загрузки файла (в виде байтов) на x0.at и получения ссылки на него
 async def upload_to_x0(file_bytes, filename, mime_type):
     from config import X0_UPLOAD_URL
     """Загружает байты на x0.at"""

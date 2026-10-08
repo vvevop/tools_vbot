@@ -18,6 +18,8 @@ logging.basicConfig(level=logging.INFO)
 
 # Установка команд бота
 async def set_commands(bot: Bot):
+
+    # команды бота, которые будут отображаться в интерфейсе Telegram
     main_commands = [
         BotCommand(command="start", description="Главное меню"),
         BotCommand(command="qr", description="Текст → QR-код"),
@@ -30,6 +32,7 @@ async def set_commands(bot: Bot):
     await bot.delete_my_commands(scope=BotCommandScopeAllGroupChats())
     await bot.delete_my_commands(scope=BotCommandScopeDefault())
 
+    # Устанавливаем команды для всех приватных чатов, групповых чатов и по умолчанию
     await bot.set_my_commands(
         commands=main_commands, 
         scope=BotCommandScopeAllPrivateChats()
@@ -39,7 +42,7 @@ async def set_commands(bot: Bot):
         commands=main_commands, 
         scope=BotCommandScopeAllGroupChats()
     )
-
+    
     await bot.set_my_commands(
         commands=main_commands, 
         scope=BotCommandScopeDefault()
@@ -52,12 +55,16 @@ async def main():
         default=DefaultBotProperties(parse_mode='HTML')
     )
 
+    # Инициализация диспетчера
     dp = Dispatcher()
+
+    # Регистрация обработчика ошибок
     dp.errors.register(handle_message_too_long)
 
+    # Регистрация функции установки команд при старте
     dp.startup.register(set_commands)
 
-    # РЕГИСТРАЦИЯ РОУТЕРОВ
+    # Регистрация роутеров
     dp.include_router(common.router)
     dp.include_router(tools.router)
 
@@ -65,6 +72,7 @@ async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
+# Запуск бота
 if __name__ == "__main__":
     try:
         asyncio.run(main())
