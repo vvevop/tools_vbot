@@ -15,3 +15,10 @@ def get_utils_kb():
     builder.button(text="Назад", callback_data="main_menu", icon_custom_emoji_id="5328091751720694986", style="danger")
     builder.adjust(1)
     return builder.as_markup()
+
+# Клавиатура для сокращенного варианта эмодзи
+def get_short_emoji_options_kb(yes_callback_data: str):
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Да", callback_data=yes_callback_data, icon_custom_emoji_id="6023940002008799618", style="success")
+    builder.adjust(1)
+    return builder.as_markup()

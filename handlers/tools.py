@@ -2,15 +2,56 @@ import io
 import html
 import qrcode
 import base64
+from typing import Tuple
 from aiogram import Router, F, Bot, types
-from aiogram.types import Message, LinkPreviewOptions, BufferedInputFile
+from aiogram.types import Message, LinkPreviewOptions, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ChatAction
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters.callback_data import CallbackData
 
 from utils.web import upload_to_x0
-from keyboards.builders import get_utils_kb
+from keyboards.builders import get_utils_kb, get_short_emoji_options_kb
 
 router = Router()
+
+class EmojiIdCallback(CallbackData, prefix="emoji_id"):
+    action: str # e.g., "send_short"
+    original_message_id: int # ID of the message that initiated the command
+
+# Helper function to generate the emoji response text
+def _generate_emoji_response_text(
+    message: Message, include_code_for_copy: bool
+) -> Tuple[str, str]: # Changed return type hint
+    custom_emojis = [e for e in (message.entities or []) if e.type == "custom_emoji"]
+
+    if not custom_emojis:
+        # Return empty strings for both parts if no custom emojis are found
+        return "", ""
+
+    emoji_details = []
+    total_emojis = len(custom_emojis)
+
+    for emoji in custom_emojis:
+        emoji_char = emoji.extract_from(message.text)
+        emoji_id = emoji.custom_emoji_id
+        
+        visual_emoji = f"<tg-emoji emoji-id='{emoji_id}'>{emoji_char}</tg-emoji>"
+        detail_line = f"\n{visual_emoji}\n<code>{emoji_id}</code>"
+        if include_code_for_copy:
+            code_for_copy = html.escape(visual_emoji)
+            detail_line += f"\n<code>{code_for_copy}</code>"
+        emoji_details.append(detail_line)
+
+    all_emojis_block = ""
+    if emoji_details:
+        all_emojis_block = f"<blockquote expandable>" + "\n".join(emoji_details) + "</blockquote>"
+    
+    total_count_block = f"<blockquote>Всего: <b>{total_emojis}</b></blockquote>"
+
+    response_parts = [part for part in [all_emojis_block, total_count_block] if part]
+    # Return both parts as a tuple
+    return "\n\n".join(response_parts), total_count_block
 
 # --- Шпаргалка ---
 @router.callback_query(F.data == "menu_utils")
@@ -68,54 +109,107 @@ async def auto_photo_handler_private(message: Message):
 async def get_sticker_id_private(message: Message):
     await process_sticker_message(message)
 
-# Новый обработчик для ответов в группах, где упоминается бот
+# Обработчик для ответов в группах, где упоминается бот
 @router.message(F.reply_to_message, F.chat.type.in_({"group", "supergroup"}))
 async def handle_group_reply_media(message: Message):
     me = await message.bot.get_me()
     bot_username = me.username
     text_content = message.text or message.caption or ""
 
+    # Проверяем, упомянут ли бот в сообщении, которое является ответом
     if f"@{bot_username}" in text_content:
-        reply = message.reply_to_message
-        if reply.photo:
-            await process_photo_message(reply)
-        elif reply.sticker:
-            await process_sticker_message(reply)
+        replied_message = message.reply_to_message # Сообщение, на которое ответили (содержит медиа/эмодзи)
+        if replied_message.photo:
+            # Обрабатываем фото из ответного сообщения
+            await process_photo_message(replied_message)
+        elif replied_message.sticker:
+            # Обрабатываем стикер из ответного сообщения
+            await process_sticker_message(replied_message)
+        elif [e for e in (replied_message.entities or []) if e.type == "custom_emoji"]:
+            # Если отвеченное сообщение содержит пользовательские эмодзи
+            await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+            full_response_text, total_count_block = _generate_emoji_response_text(replied_message, include_code_for_copy=True)
+            if not full_response_text:
+                await replied_message.reply("Не удалось найти премиум эмодзи в ответном сообщении.")
+                return
 
+            try:
+                # Отвечаем на сообщение с эмодзи
+                await replied_message.reply(full_response_text)
+            except TelegramBadRequest as e:
+                if "message is too long" in str(e):
+                    # Создаем инлайн-клавиатуру для сокращенной версии
+                    yes_callback_data = EmojiIdCallback(action="send_short_yes", original_message_id=replied_message.message_id).pack()
+                    keyboard = get_short_emoji_options_kb(yes_callback_data)
+                    await replied_message.reply(
+                        "<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Результат получился слишком большим.\n"
+                        "<tg-emoji emoji-id='5807800879553715710'>❓</tg-emoji> <b>Отправить сокращенный вариант?</b>\n\n"
+                        f"{total_count_block}",
+                        reply_markup=keyboard
+                    )
+                else:
+                    await replied_message.reply(f"❌ Произошла ошибка Telegram: {str(e)}")
+            except Exception as e:
+                await replied_message.reply(f"❌ Произошла непредвиденная ошибка: {str(e)}")
 # --- Код эмодзи из текста ---
 @router.message(F.chat.type == "private", F.entities.len() > 0, ~F.text.startswith("/"))
 async def get_emoji_id(message: Message):
     await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
-    # Ищем кастомные эмодзи во всем сообщении
-    custom_emojis = [e for e in (message.entities or []) if e.type == "custom_emoji"]
-    
-    if not custom_emojis:
-        return # Если нет кастомных эмодзи, игнорируем сообщение
+    full_response_text, total_count_block = _generate_emoji_response_text(message, include_code_for_copy=True)
+    if not full_response_text:
+        return # No custom emojis found
 
-    emoji_details = []
-    total_emojis = len(custom_emojis) # Вычисляем общее количество эмодзи
+    try:
+        await message.reply(full_response_text)
+    except TelegramBadRequest as e:
+        if "message is too long" in str(e):
+            # Create inline keyboard for short version
+            yes_callback_data = EmojiIdCallback(action="send_short_yes", original_message_id=message.message_id).pack()
+            keyboard = get_short_emoji_options_kb(yes_callback_data)
+            await message.reply(
+                "<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Результат получился слишком большим.\n"
+                "<tg-emoji emoji-id='5807800879553715710'>❓</tg-emoji> <b>Отправить сокращенный вариант?</b>\n\n"
+                f"{total_count_block}",
+                reply_markup=keyboard
+            )
+        else:
+            await message.answer(f"❌ Произошла ошибка Telegram: {str(e)}")
+    except Exception as e:
+        await message.answer(f"❌ Произошла непредвиденная ошибка: {str(e)}")
 
-    for emoji in custom_emojis:
-        emoji_char = emoji.extract_from(message.text)
-        emoji_id = emoji.custom_emoji_id
-        
-        # Формируем визуальный пример и код для копирования
-        visual_emoji = f"<tg-emoji emoji-id='{emoji_id}'>{emoji_char}</tg-emoji>"
-        code_for_copy = html.escape(visual_emoji)
-        
-        emoji_details.append(f"\n{visual_emoji}\n<code>{code_for_copy}</code>")
+# Handler for "Да" (Yes) button to send the short emoji ID and delete the original message
+@router.callback_query(EmojiIdCallback.filter(F.action == "send_short_yes"))
+async def handle_send_short_yes(callback: types.CallbackQuery, callback_data: EmojiIdCallback):
+    """
+    Обрабатывает нажатие кнопки "Да" для отправки сокращенной версии ID эмодзи.
+    После отправки удаляет сообщение бота с кнопками.
+    """
+    await callback.answer("Подготавливаю сокращенный вариант...")
 
-    # Объединяем все детали эмодзи в один блок цитаты
-    all_emojis_block = ""
-    if emoji_details: # Только если есть эмодзи, создаем блок
-        all_emojis_block = f"<blockquote expandable>" + "\n".join(emoji_details) + "</blockquote>"
-    
-    # Отдельный блок для общего количества
-    total_count_block = f"<blockquote>Всего: <b>{total_emojis}</b></blockquote>"
+    original_user_message = callback.message.reply_to_message
 
-    response_parts = [part for part in [all_emojis_block, total_count_block] if part]
-    await message.reply("\n\n".join(response_parts))
+    if not original_user_message:
+        await callback.message.edit_text("Не удалось найти исходное сообщение для сокращенной версии.")
+        return
+
+    short_response_text, _ = _generate_emoji_response_text(original_user_message, include_code_for_copy=False)
+
+    if not short_response_text:
+        await callback.message.edit_text("Сокращенный вариант пуст.")
+        return
+
+    try:
+        # Edit the bot's previous message (the one with the button) to display the short text
+        await callback.message.edit_text(short_response_text, reply_markup=None)
+    except TelegramBadRequest as e:
+        await callback.message.edit_text(f"❌ Не удалось отправить сокращенный вариант: {str(e)}")
+    except Exception as e:
+        await callback.message.edit_text(f"❌ Произошла непредвиденная ошибка при отправке сокращенной версии: {str(e)}")
+
+
+
+
 
 # --- Text → QR ---
 @router.message(Command("qr"))

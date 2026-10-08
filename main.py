@@ -3,16 +3,15 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.types import (
     BotCommand,
-    BotCommandScopeDefault,
     BotCommandScopeAllPrivateChats,
     BotCommandScopeAllGroupChats,
-    BotCommandScopeChat,
-    BotCommandScopeChatAdministrators
+    BotCommandScopeDefault
 )
 from aiogram.client.default import DefaultBotProperties
 
 from config import BOT_TOKEN
-from handlers import common, tools # Removed admin, server
+from handlers import common, tools
+from utils.error_handler import handle_message_too_long
 
 # Настройка логгирования
 logging.basicConfig(level=logging.INFO)
@@ -25,7 +24,12 @@ async def set_commands(bot: Bot):
         BotCommand(command="enc64", description="Text → Base64"),
         BotCommand(command="dec64", description="Base64 → Text"),
     ]
-    
+
+    # Очищаем абсолютно всё
+    await bot.delete_my_commands(scope=BotCommandScopeAllPrivateChats())
+    await bot.delete_my_commands(scope=BotCommandScopeAllGroupChats())
+    await bot.delete_my_commands(scope=BotCommandScopeDefault())
+
     await bot.set_my_commands(
         commands=main_commands, 
         scope=BotCommandScopeAllPrivateChats()
@@ -36,6 +40,11 @@ async def set_commands(bot: Bot):
         scope=BotCommandScopeAllGroupChats()
     )
 
+    await bot.set_my_commands(
+        commands=main_commands, 
+        scope=BotCommandScopeDefault()
+    )
+
 async def main():
     # Инициализация бота
     bot = Bot(
@@ -44,6 +53,7 @@ async def main():
     )
 
     dp = Dispatcher()
+    dp.errors.register(handle_message_too_long)
 
     dp.startup.register(set_commands)
 
