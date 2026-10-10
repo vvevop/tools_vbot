@@ -22,3 +22,11 @@ def get_short_emoji_options_kb(yes_callback_data: str):
     builder.button(text="Да", callback_data=yes_callback_data, icon_custom_emoji_id="6023940002008799618", style="success")
     builder.adjust(1)
     return builder.as_markup()
+
+# Вобор действия с фото
+def get_photo_action_kb():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Ссылка", callback_data="link_photo", icon_custom_emoji_id="5877465816030515018")
+    builder.button(text="GIF", callback_data="gif_photo", icon_custom_emoji_id="5945068566909815651")
+    builder.adjust(2)
+    return builder.as_markup()

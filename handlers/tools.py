@@ -3,15 +3,27 @@ import html
 import qrcode
 import base64
 from typing import Tuple
+import asyncio
+import shutil
+from pathlib import Path
+
 from aiogram import Router, F, Bot, types
-from aiogram.types import Message, LinkPreviewOptions, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, LinkPreviewOptions, BufferedInputFile, FSInputFile, InputMediaAnimation, CallbackQuery
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters.callback_data import CallbackData
 
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+
+# Создаем группу состояний
+class PhotoVideoProcessing(StatesGroup):
+    waiting_for_action = State()  # ждем действия с фото (ссылка или GIF)
+    waiting_for_trim_choice = State()   # ждем выбора обрезки (да/нет) для видео
+
 from utils.web import upload_to_x0
-from keyboards.builders import get_utils_kb, get_short_emoji_options_kb
+from keyboards.builders import get_utils_kb, get_short_emoji_options_kb, get_photo_action_kb
 
 router = Router()
 
@@ -20,9 +32,7 @@ class EmojiIdCallback(CallbackData, prefix="emoji_id"):
     original_message_id: int # ID сообщения, инициировавшего команду
 
 # Вспомогательная функция для формирования текста ответа с эмодзи
-def _generate_emoji_response_text(
-    message: Message, include_code_for_copy: bool
-) -> Tuple[str, str]:
+def _generate_emoji_response_text(message: Message, include_code_for_copy: bool) -> Tuple[str, str]:
     custom_emojis = [e for e in (message.entities or []) if e.type == "custom_emoji"]
 
     if not custom_emojis:
@@ -55,7 +65,7 @@ def _generate_emoji_response_text(
 
 # --- Меню "Доступные функции" ---
 @router.callback_query(F.data == "menu_utils")
-async def handle_utils_menu(callback: types.CallbackQuery):
+async def handle_utils_menu(callback: CallbackQuery):
     await callback.message.edit_text(
 """<tg-emoji emoji-id='6021401276904905698'>🛠</tg-emoji> <b>Доступные функции:</b>
 
@@ -73,7 +83,7 @@ async def handle_utils_menu(callback: types.CallbackQuery):
         reply_markup=get_utils_kb()
     )
 
-# Обработка фотографий 
+# Фото → Ссылка (x0.at)
 async def process_photo_message(message: Message):
     await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.UPLOAD_PHOTO)
     try:
@@ -89,28 +99,130 @@ async def process_photo_message(message: Message):
                 link_preview_options=LinkPreviewOptions(is_disabled=True)
             )
         else:
-            await message.answer("❌ Ошибка загрузки на сервис.")
+            await message.answer("<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Ошибка загрузки на сервис.")
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {str(e)}")
+        await message.answer(f"<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Ошибка: {str(e)}")
 
-# Обработка стикеров 
+# Обработчик стикеров
 async def process_sticker_message(message: Message):
     await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
     await message.reply(f"<code>{message.sticker.file_id}</code>")
 
-# --- Загрузка фото ---
+# Обработчик фото
 @router.message(F.photo, F.chat.type == "private")
-async def auto_photo_handler_private(message: Message):
-    await process_photo_message(message)
+async def photo_handler_private(message: Message, state: FSMContext):
+    # Сохраняем file_id фото в данные состояния пользователя
+    await state.update_data(current_photo_id=message.photo[-1].file_id)
 
-# --- ID стикера ---
+    # Переводим пользователя в состояние ожидания действия
+    await state.set_state(PhotoVideoProcessing.waiting_for_action)
+
+    await message.reply(
+        "<tg-emoji emoji-id='5807800879553715710'>❓</tg-emoji> Что сделать с фото?",
+        reply_markup=get_photo_action_kb()
+    )
+
+# Фото → Ссылка (x0.at)
+@router.callback_query(F.data == "link_photo")
+async def handle_link_photo(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    photo_id = data.get("current_photo_id")
+
+    await callback.message.bot.send_chat_action(chat_id=callback.message.chat.id, action=ChatAction.UPLOAD_PHOTO)
+    try:
+        file_io = io.BytesIO()
+        await callback.message.bot.download(file=photo_id, destination=file_io)
+        file_io.seek(0)
+
+        url = await upload_to_x0(file_io, "image.jpg", "image/jpeg")
+        if url:
+            await callback.message.edit_text(
+                f'<a href="{url}">⁡</a>',
+                link_preview_options=LinkPreviewOptions(is_disabled=True)
+            )
+        else:
+            await callback.message.edit_text("<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Ошибка загрузки на сервис.")
+    except Exception as e:
+        await callback.message.edit_text(f"<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Ошибка: {str(e)}")
+    finally:
+        await state.clear()
+
+# Фото → GIF (5-секундное видео)
+@router.callback_query(F.data == "gif_photo", PhotoVideoProcessing.waiting_for_action)
+async def handle_gif_photo(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    photo_id = data.get("current_photo_id")
+
+    if not photo_id:
+        await callback.message.edit_text("<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Фото не найдено")
+        await state.clear()
+        return
+
+    ffmpeg = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
+    if not ffmpeg:
+        await callback.message.edit_text("<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> ffmpeg не найден")
+        await state.clear()
+        return
+
+    await callback.answer("⏳ Обрабатываю...")
+    await callback.message.bot.send_chat_action(
+        chat_id=callback.message.chat.id,
+        action=ChatAction.UPLOAD_VIDEO
+    )
+
+    input_path = Path("temp_photo.jpg")
+    output_path = Path("gif.mp4")
+
+    try:
+        # Скачиваем фото
+        file = await callback.message.bot.get_file(photo_id)
+        await callback.message.bot.download_file(file.file_path, destination=input_path)
+
+        # Фото → 5-секундное бесшумное видео
+        process = await asyncio.create_subprocess_exec(
+            ffmpeg, "-y",
+            "-loop", "1",
+            "-i", str(input_path),
+            "-c:v", "libx264",
+            "-t", "5",
+            "-pix_fmt", "yuv420p",
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-an",
+            str(output_path),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE
+        )
+        _, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            raise Exception(stderr.decode(errors="ignore")[-400:])
+
+        # === Главное отличие ===
+        # Отправляем как Animation (GIF), а не как Video
+        animation = FSInputFile(output_path)
+        await callback.message.edit_media(
+            media=InputMediaAnimation(media=animation, caption="")
+        )
+
+    except Exception as e:
+        await callback.message.edit_text(f"<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Ошибка:\n<code>{e}</code>")
+    finally:
+        for f in (input_path, output_path):
+            if f.exists():
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+        await state.clear()
+
+# ID стикера
 @router.message(F.sticker, F.chat.type == "private")
 async def get_sticker_id_private(message: Message):
     await process_sticker_message(message)
 
 # Обработчик для ответов в группах, где упоминается бот
 @router.message(F.reply_to_message, F.chat.type.in_({"group", "supergroup"}))
-async def handle_group_reply_media(message: Message):
+async def handle_group_reply_media(message: Message, state: FSMContext):
     me = await message.bot.get_me()
     bot_username = me.username
     text_content = message.text or message.caption or ""
@@ -119,8 +231,16 @@ async def handle_group_reply_media(message: Message):
     if f"@{bot_username}" in text_content:
         replied_message = message.reply_to_message # Сообщение, на которое ответили (содержит медиа/эмодзи)
         if replied_message.photo:
-            # Обрабатываем фото из ответного сообщения
-            await process_photo_message(replied_message)
+            # Сохраняем file_id фото в данные состояния пользователя
+            await state.update_data(current_photo_id=replied_message.photo[-1].file_id)
+            
+            # Переводим пользователя в состояние ожидания действия
+            await state.set_state(PhotoVideoProcessing.waiting_for_action)
+            
+            await replied_message.reply(
+                "<tg-emoji emoji-id='5807800879553715710'>❓</tg-emoji> Что сделать с фото?",
+                reply_markup=get_photo_action_kb()
+            )
         elif replied_message.sticker:
             # Обрабатываем стикер из ответного сообщения
             await process_sticker_message(replied_message)
@@ -147,11 +267,11 @@ async def handle_group_reply_media(message: Message):
                         reply_markup=keyboard
                     )
                 else:
-                    await replied_message.reply(f"❌ Произошла ошибка Telegram: {str(e)}")
+                    await replied_message.reply(f"<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Произошла ошибка Telegram: {str(e)}")
             except Exception as e:
-                await replied_message.reply(f"❌ Произошла непредвиденная ошибка: {str(e)}")
+                await replied_message.reply(f"<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Произошла непредвиденная ошибка: {str(e)}")
 
-# --- Код эмодзи из текста ---
+# Код эмодзи из текста
 @router.message(F.chat.type == "private", F.entities.len() > 0, ~F.text.startswith("/"))
 async def get_emoji_id(message: Message):
     await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
@@ -174,13 +294,13 @@ async def get_emoji_id(message: Message):
                 reply_markup=keyboard
             )
         else:
-            await message.answer(f"❌ Произошла ошибка Telegram: {str(e)}")
+            await message.answer(f"<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Произошла ошибка Telegram: {str(e)}")
     except Exception as e:
-        await message.answer(f"❌ Произошла непредвиденная ошибка: {str(e)}")
+        await message.answer(f"<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Произошла непредвиденная ошибка: {str(e)}")
 
 # Обработчик для кнопки «Да», отправляющий короткий ID эмодзи и удаляющий исходное сообщение
 @router.callback_query(EmojiIdCallback.filter(F.action == "send_short_yes"))
-async def handle_send_short_yes(callback: types.CallbackQuery, callback_data: EmojiIdCallback):
+async def handle_send_short_yes(callback: CallbackQuery, callback_data: EmojiIdCallback):
     """
     Обрабатывает нажатие кнопки "Да" для отправки сокращенной версии ID эмодзи.
     После отправки удаляет сообщение бота с кнопками.
@@ -203,15 +323,11 @@ async def handle_send_short_yes(callback: types.CallbackQuery, callback_data: Em
         # Редактируем предыдущее сообщение бота (то, что с кнопкой), чтобы отобразить короткий текст.
         await callback.message.edit_text(short_response_text, reply_markup=None)
     except TelegramBadRequest as e:
-        await callback.message.edit_text(f"❌ Не удалось отправить сокращенный вариант: {str(e)}")
+        await callback.message.edit_text(f"<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Не удалось отправить сокращенный вариант: {str(e)}")
     except Exception as e:
-        await callback.message.edit_text(f"❌ Произошла непредвиденная ошибка при отправке сокращенной версии: {str(e)}")
+        await callback.message.edit_text(f"<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Произошла непредвиденная ошибка при отправке сокращенной версии: {str(e)}")
 
-
-
-
-
-# --- Text → QR ---
+# Text → QR
 @router.message(Command("qr"))
 async def cmd_qr(message: types.Message, command: CommandObject):
     if not command.args:
@@ -243,9 +359,9 @@ async def cmd_qr(message: types.Message, command: CommandObject):
         )
         
     except Exception as e:
-        await message.answer(f"❌ Ошибка при генерации: {str(e)}")
+        await message.answer(f"<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Ошибка при генерации: {str(e)}")
 
-# --- Text → Base64 ---
+# Text → Base64
 @router.message(Command("enc64"))
 async def cmd_enc64(message: types.Message, command: CommandObject):
     # Добавляем комментарий к функции: Кодирует введенный текст в формат Base64.
@@ -263,9 +379,9 @@ async def cmd_enc64(message: types.Message, command: CommandObject):
             f"<code>{encoded_text}</code>"
         )
     except Exception as e:
-        await message.answer(f"❌ Ошибка при кодировании: {str(e)}")
+        await message.answer(f"<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Ошибка при кодировании: {str(e)}")
 
-# --- Base64 → Text ---
+# Base64 → Text
 @router.message(Command("dec64"))
 async def cmd_dec64(message: types.Message, command: CommandObject):
     # Добавляем комментарий к функции: Декодирует введенный текст из формата Base64.
@@ -283,4 +399,4 @@ async def cmd_dec64(message: types.Message, command: CommandObject):
             f"<code>{decoded_text}</code>"
         )
     except Exception as e:
-        await message.answer(f"❌ Ошибка при декодировании. Возможно, это не валидный Base64: {str(e)}")
+        await message.answer(f"<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Ошибка при декодировании. Возможно, это не валидный Base64: {str(e)}")
