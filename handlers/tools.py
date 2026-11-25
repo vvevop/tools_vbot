@@ -4,11 +4,13 @@ import qrcode
 import base64
 from typing import Tuple
 import asyncio
+import logging
+from tempfile import TemporaryDirectory
 import shutil
 from pathlib import Path
 
 from aiogram import Router, F, Bot, types
-from aiogram.types import Message, LinkPreviewOptions, BufferedInputFile, FSInputFile, InputMediaAnimation, CallbackQuery
+from aiogram.types import Message, LinkPreviewOptions, BufferedInputFile, FSInputFile, CallbackQuery
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramBadRequest
@@ -26,6 +28,7 @@ from utils.web import upload_to_x0
 from keyboards.builders import get_utils_kb, get_short_emoji_options_kb, get_photo_action_kb
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 class EmojiIdCallback(CallbackData, prefix="emoji_id"):
     action: str # например, "send_short"
@@ -66,20 +69,29 @@ def _generate_emoji_response_text(message: Message, include_code_for_copy: bool)
 # --- Меню "Доступные функции" ---
 @router.callback_query(F.data == "menu_utils")
 async def handle_utils_menu(callback: CallbackQuery):
+    bot = await callback.bot.me()
     await callback.message.edit_text(
-"""<tg-emoji emoji-id='6021401276904905698'>🛠</tg-emoji> <b>Доступные функции:</b>
+f"""🛠<b>Доступные функции:</b>
 
-Эти инструменты работают <b>всегда</b>:
+Просто отправьте боту в личные сообщения:
 
-<tg-emoji emoji-id='5775949822993371030'>🖼</tg-emoji> <b>Фото</b> — прямая ссылка (x0.at)
-<tg-emoji emoji-id='5784982040432611567'>🙂</tg-emoji> <b>Стикер</b> — получение File ID
-<tg-emoji emoji-id='5956148757899776734'>⭐️</tg-emoji> Текст, содержащий <b>Premium эмодзи</b> — коды для вставки всех кастомных эмодзи из текста
+🖼<b>Фото</b> — на выбор:
+• 🔗Ссылка — прямая ссылка на изображение (x0.at)
+• 🎞GIF — превращение фото в 5-секундную GIF-анимацию
+🙂Стикер — получение File ID
+⭐️ Текст с Premium эмодзи — ID и код для вставки каждого кастомного эмодзи (если результат слишком большой, бот предложит сокращённый вариант)
 
 <b>Команды:</b>
-<code>/qr [текст]</code> — генерация QR-кода
-<code>/enc64 [текст]</code> — кодирование текста в Base64
-<code>/dec64 [base64_текст]</code> — декодирование текста из Base64
-""",
+<code>/qr [текст]</code>
+— генерация QR-кода
+<code>/enc64 [текст]</code>
+— кодирование текста в Base64
+<code>/dec64 [base64_текст]</code>
+— декодирование текста из Base64
+
+В группах: ответьте на фото, стикер или сообщение с Premium эмодзи и упомяните бота (
+@{bot.username}
+) — он выполнит то же самое. Команды работают и в группах.""",
         reply_markup=get_utils_kb()
     )
 
@@ -147,73 +159,52 @@ async def handle_link_photo(callback: CallbackQuery, state: FSMContext):
     finally:
         await state.clear()
 
-# Фото → GIF (5-секундное видео)
-@router.callback_query(F.data == "gif_photo", PhotoVideoProcessing.waiting_for_action)
-async def handle_gif_photo(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    photo_id = data.get("current_photo_id")
-
-    if not photo_id:
-        await callback.message.edit_text("<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Фото не найдено")
-        await state.clear()
+# Фото → GIF (бесшумный MP4, который Telegram показывает как анимацию)
+@router.callback_query(F.data == "gif_photo")
+async def handle_gif_photo(callback: CallbackQuery):
+    prompt = callback.message
+    source = prompt.reply_to_message if isinstance(prompt, Message) else None
+    if not source or not source.photo:
+        await callback.answer("Фото не найдено. Отправьте его ещё раз.", show_alert=True)
         return
 
-    ffmpeg = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
+    ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
-        await callback.message.edit_text("<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> ffmpeg не найден")
-        await state.clear()
+        logger.error("GIF conversion requires FFmpeg")
+        await callback.answer("Конвертация временно недоступна.", show_alert=True)
         return
 
     await callback.answer("⏳ Обрабатываю...")
-    await callback.message.bot.send_chat_action(
-        chat_id=callback.message.chat.id,
-        action=ChatAction.UPLOAD_VIDEO
-    )
-
-    input_path = Path("temp_photo.jpg")
-    output_path = Path("gif.mp4")
-
     try:
-        # Скачиваем фото
-        file = await callback.message.bot.get_file(photo_id)
-        await callback.message.bot.download_file(file.file_path, destination=input_path)
+        with TemporaryDirectory(prefix="tools-vbot-gif-") as directory:
+            input_path = Path(directory) / "photo.jpg"
+            output_path = Path(directory) / "animation.mp4"
+            await callback.bot.download(source.photo[-1], destination=input_path)
+            process = await asyncio.create_subprocess_exec(
+                ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error",
+                "-loop", "1", "-framerate", "15", "-i", str(input_path),
+                "-t", "5", "-an", "-c:v", "libx264", "-threads", "2",
+                "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                "-vf", "scale='min(960,iw)':'min(960,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+                "-movflags", "+faststart", str(output_path),
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                _, stderr = await asyncio.wait_for(process.communicate(), timeout=45)
+            finally:
+                if process.returncode is None:
+                    process.kill()
+                    await process.communicate()
+            if process.returncode != 0:
+                logger.error("FFmpeg GIF conversion failed: %s", stderr.decode(errors="replace").strip()[-500:])
+                await prompt.reply("❌ Не удалось сделать GIF из этого фото.")
+                return
 
-        # Фото → 5-секундное бесшумное видео
-        process = await asyncio.create_subprocess_exec(
-            ffmpeg, "-y",
-            "-loop", "1",
-            "-i", str(input_path),
-            "-c:v", "libx264",
-            "-t", "5",
-            "-pix_fmt", "yuv420p",
-            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-            "-an",
-            str(output_path),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE
-        )
-        _, stderr = await process.communicate()
+            await source.reply_animation(FSInputFile(output_path), duration=5)
+    except Exception as error:
+        logger.error("Photo to GIF failed: %s", type(error).__name__)
+        await prompt.reply("❌ Не удалось отправить GIF. Попробуйте ещё раз.")
 
-        if process.returncode != 0:
-            raise Exception(stderr.decode(errors="ignore")[-400:])
-
-        # === Главное отличие ===
-        # Отправляем как Animation (GIF), а не как Video
-        animation = FSInputFile(output_path)
-        await callback.message.edit_media(
-            media=InputMediaAnimation(media=animation, caption="")
-        )
-
-    except Exception as e:
-        await callback.message.edit_text(f"<tg-emoji emoji-id='5778527486270770928'>❌</tg-emoji> Ошибка:\n<code>{e}</code>")
-    finally:
-        for f in (input_path, output_path):
-            if f.exists():
-                try:
-                    f.unlink()
-                except Exception:
-                    pass
-        await state.clear()
 
 # ID стикера
 @router.message(F.sticker, F.chat.type == "private")
