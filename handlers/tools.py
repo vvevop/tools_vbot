@@ -71,15 +71,15 @@ def _generate_emoji_response_text(message: Message, include_code_for_copy: bool)
 async def handle_utils_menu(callback: CallbackQuery):
     bot = await callback.bot.me()
     await callback.message.edit_text(
-f"""🛠<b>Доступные функции:</b>
+f"""<tg-emoji emoji-id='6021401276904905698'>🛠</tg-emoji><b>Доступные функции:</b>
 
 Просто отправьте боту в личные сообщения:
 
-🖼<b>Фото</b> — на выбор:
-• 🔗Ссылка — прямая ссылка на изображение (x0.at)
-• 🎞GIF — превращение фото в 5-секундную GIF-анимацию
-🙂Стикер — получение File ID
-⭐️ Текст с Premium эмодзи — ID и код для вставки каждого кастомного эмодзи (если результат слишком большой, бот предложит сокращённый вариант)
+<tg-emoji emoji-id='5775949822993371030'>🖼</tg-emoji><b>Фото</b> — на выбор:
+• <tg-emoji emoji-id='5877465816030515018'>🔗</tg-emoji>Ссылка — прямая ссылка на изображение (x0.at)
+• <tg-emoji emoji-id='5945068566909815651'>🎞</tg-emoji>GIF — превращение фото в 5-секундную GIF-анимацию
+<tg-emoji emoji-id='5784982040432611567'>🙂</tg-emoji>Стикер — получение File ID
+<tg-emoji emoji-id='5956148757899776734'>⭐️</tg-emoji> Текст с Premium эмодзи — ID и код для вставки каждого кастомного эмодзи (если результат слишком большой, бот предложит сокращённый вариант)
 
 <b>Команды:</b>
 <code>/qr [текст]</code>
